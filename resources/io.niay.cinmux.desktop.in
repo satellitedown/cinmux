@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Cinmux
+Comment=Persistent terminal workspaces
+Exec=@CINMUX_DESKTOP_EXEC@
+Icon=io.niay.cinmux
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;tmux;workspaces;
