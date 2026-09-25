@@ -1,5 +1,7 @@
 # Cinmux
 
+![Cinmux with folders, tab activity statuses, and a split tmux session](docs/screenshot.png)
+
 Persistent terminal workspaces for a Linux Wayland desktop. Organize real terminal sessions in a Notes-style native interface: folders, pinned entries, global search, tmux splits, working-directory/git metadata, and durable attention notifications.
 
 Cinmux uses Qt Quick for the application chrome and an in-process **wlroots/pixman compositor displaying real Foot clients** for terminals. It is not Electron, a browser terminal emulator, or a scheme for positioning external terminal windows. Each entry owns a tmux session; tmux manages its panes and windows.
