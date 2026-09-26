@@ -19,7 +19,7 @@ PREFIX="${CINMUX_PREFIX:-$HOME/.local}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/cinmux"
 # Keep in sync with the README's dependency list.
 PACKAGES=(gcc cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg icu tomlplusplus wlroots0.20
-	wayland libxkbcommon pixman foot tmux git noto-fonts xdg-utils)
+	wayland libxkbcommon pixman libvterm foot tmux git noto-fonts xdg-utils)
 
 step() { printf '\n\033[1;36m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 fail() {

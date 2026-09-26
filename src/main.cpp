@@ -1,9 +1,11 @@
 #include "cli.h"
+#include "foot_renderer.h"
 #include "session_controller.h"
 #include "state_store.h"
 #include "terminal_compositor.h"
 #include "terminal_surface_item.h"
 #include "theme.h"
+#include "tui_app.h"
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -49,6 +51,10 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationName("cinmux");
     QCoreApplication::setOrganizationName("niay");
     QCoreApplication::setApplicationVersion("1.0.0");
+    if (argc > 1 && QByteArray(argv[1]) == "tui") {
+        QCoreApplication app(argc, argv);
+        return runTui(app);
+    }
     if (argc > 1) {
         QCoreApplication app(argc, argv);
         return runCli(app.arguments());
@@ -84,9 +90,10 @@ int main(int argc, char **argv)
     TerminalCompositor compositor(store.profileHash());
     compositor.create();
     if (!compositor.isCreated()) return startupFailure(app, theme, compositor.error());
-    SessionController controller(&store, &compositor);
-    controller.setColorMode(theme.mode());
-    QObject::connect(&theme, &Theme::changed, &controller, [&] { controller.setColorMode(theme.mode()); });
+    FootRenderer renderer(&store, &compositor);
+    renderer.setColorMode(theme.mode());
+    QObject::connect(&theme, &Theme::changed, &renderer, [&] { renderer.setColorMode(theme.mode()); });
+    SessionController controller(&store, &renderer);
     controller.setView(settings.value("selection/view", "all").toString());
     const QString selected = settings.value("selection/session").toString();
     if (!selected.isEmpty()) controller.selectSession(selected);

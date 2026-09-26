@@ -1,5 +1,6 @@
 #include "session_controller.h"
 #include "state_store.h"
+#include "terminal_renderer.h"
 
 #include <QCoreApplication>
 #include <QProcess>
@@ -47,6 +48,16 @@ struct PrivateServer {
         return result;
     }
 };
+// Stands in for Foot/libvterm views: records attachment and reports loss on demand.
+class ViewRenderer final : public TerminalRenderer {
+public:
+    void attach(const QString &id, bool) override { m_attached.insert(id); }
+    void detach(const QString &id) override { m_attached.remove(id); }
+    bool attached(const QString &id) const override { return m_attached.contains(id); }
+    void lose(const QString &id, const QString &message) { m_attached.remove(id); emit lost(id, message); }
+private:
+    QSet<QString> m_attached;
+};
 }
 
 class BackendTest : public QObject {
@@ -63,6 +74,7 @@ private slots:
     void activityAggregatesIndependentReporters();
     void waitingSurvivesSelectionAndAcknowledgement();
     void activityReconcilesDeadAndReusedReporters();
+    void viewLossReportsOnlyRendererFailures();
 };
 
 void BackendTest::notificationAcknowledgesOnlyObservedSequence() {
@@ -512,6 +524,40 @@ void BackendTest::activityReconcilesDeadAndReusedReporters() {
     QVERIFY(reopened.sessions(&entries));
     QCOMPARE(entries.first().activity, QStringLiteral("idle"));
     QVERIFY(!StateStore::processIdentity(childReporter.pid, &forged, &message));
+}
+
+void BackendTest::viewLossReportsOnlyRendererFailures() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    StateStore store(directory.path());
+    QVERIFY2(store.open(), qPrintable(store.error()));
+    PrivateServer server{store.tmuxSocket()};
+    ViewRenderer renderer;
+    SessionController controller(&store, &renderer);
+    QSignalSpy errors(&controller, &SessionController::operationFailed);
+    controller.createSession({}, directory.path());
+    const QString id = controller.selectedId();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.selected().value("status").toString(), QStringLiteral("running"), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(renderer.attached(id), 10000);
+
+    // The view dies while its session keeps running: a failure worth reporting.
+    renderer.lose(id, QStringLiteral("renderer crashed"));
+    QTRY_COMPARE_WITH_TIMEOUT(errors.count(), 1, 5000);
+    QCOMPARE(errors.first().at(1).toString(), QStringLiteral("renderer crashed"));
+    QCOMPARE(controller.selected().value("terminalError").toString(), QStringLiteral("renderer crashed"));
+
+    // The session itself ends (last pane closed, server exited): the view's
+    // loss is a stop, shown as "Session stopped" rather than an error.
+    controller.reconnectTerminal(id);
+    QTRY_VERIFY_WITH_TIMEOUT(renderer.attached(id) && controller.selected().value("terminalError").toString().isEmpty(), 10000);
+    bool killed = false;
+    server.run({QStringLiteral("kill-session"), QStringLiteral("-t"), QStringLiteral("=") + StateStore::sessionName(id)}, &killed);
+    QVERIFY(killed);
+    renderer.lose(id, QStringLiteral("[exited]"));
+    QTRY_COMPARE_WITH_TIMEOUT(controller.selected().value("status").toString(), QStringLiteral("stopped"), 10000);
+    QTest::qWait(300);
+    QCOMPARE(errors.count(), 1);
+    QVERIFY(controller.selected().value("terminalError").toString().isEmpty());
 }
 
 QTEST_GUILESS_MAIN(BackendTest)

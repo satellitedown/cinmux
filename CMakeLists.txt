@@ -12,19 +12,23 @@ find_package(ICU REQUIRED COMPONENTS uc)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WLROOTS REQUIRED IMPORTED_TARGET wlroots-0.20>=0.20.2 wlroots-0.20<0.21)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-server wayland-client xkbcommon pixman-1)
+pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm>=0.3)
 qt_standard_project_setup(REQUIRES 6.8)
 add_library(cinmux_core STATIC
     src/state_store.cpp src/state_store.h
     src/session_model.cpp src/session_model.h
     src/session_controller.cpp src/session_controller.h
+    src/terminal_renderer.h src/foot_renderer.cpp src/foot_renderer.h
     src/terminal_compositor.cpp src/terminal_compositor.h
     src/native_server.c src/native_server.h
     src/clipboard_bridge.cpp src/clipboard_bridge.h
     src/terminal_surface_item.cpp src/terminal_surface_item.h
+    src/tui_app.cpp src/tui_app.h src/tui_input.cpp src/tui_input.h
+    src/tui_screen.cpp src/tui_screen.h src/tui_terminal.cpp src/tui_terminal.h
     src/cli.cpp src/cli.h src/theme.cpp src/theme.h)
 target_include_directories(cinmux_core PUBLIC src)
 target_link_libraries(cinmux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::Sql Qt6::Network tomlplusplus::tomlplusplus)
-target_link_libraries(cinmux_core PRIVATE ICU::uc PkgConfig::WLROOTS PkgConfig::WAYLAND)
+target_link_libraries(cinmux_core PRIVATE ICU::uc PkgConfig::WLROOTS PkgConfig::WAYLAND PkgConfig::VTERM)
 target_compile_definitions(cinmux_core PRIVATE WLR_USE_UNSTABLE)
 qt_add_executable(cinmux src/main.cpp)
 target_link_libraries(cinmux PRIVATE cinmux_core Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Svg)
@@ -57,6 +61,9 @@ if(BUILD_TESTING)
     qt_add_executable(theme_test tests/theme_test.cpp)
     target_link_libraries(theme_test PRIVATE cinmux_core Qt6::Test)
     add_test(NAME theme COMMAND theme_test)
+    qt_add_executable(tui_test tests/tui_test.cpp)
+    target_link_libraries(tui_test PRIVATE cinmux_core Qt6::Test)
+    add_test(NAME tui COMMAND tui_test)
         qt_add_executable(backend_test tests/backend_test.cpp)
         target_link_libraries(backend_test PRIVATE cinmux_core Qt6::Test)
         qt_add_resources(backend_test test_resources PREFIX /cinmux BASE resources FILES resources/cinmux.tmux.conf)

@@ -6,6 +6,8 @@ Persistent terminal workspaces for a Linux Wayland desktop. Organize real termin
 
 Cinmux uses Qt Quick for the application chrome and an in-process **wlroots/pixman compositor displaying real Foot clients** for terminals. It is not Electron, a browser terminal emulator, or a scheme for positioning external terminal windows. Each entry owns a tmux session; tmux manages its panes and windows.
 
+`cinmux tui` shows the same workspace inside any terminal—for example over SSH—with the same folders, sessions, menus, and notifications. See [Terminal UI over SSH](#terminal-ui-over-ssh).
+
 ## Install
 
 On Arch Linux or Omarchy, one command installs Cinmux:
@@ -36,10 +38,11 @@ Build requirements, matching `CMakeLists.txt`:
 - toml++ (`tomlplusplus` CMake package) and ICU's `uc` library.
 - **wlroots 0.20.2 or newer within the 0.20 ABI series**: pkg-config module `wlroots-0.20`, constrained to `>=0.20.2` and `<0.21`. Other wlroots ABI series are not interchangeable; installing only a newer differently named series does not satisfy this requirement.
 - pkg-config modules `wayland-server`, `wayland-client`, `xkbcommon`, and `pixman-1`.
+- libvterm **0.3+** (pkg-config module `vterm`) for `cinmux tui`.
 
 Runtime requirements:
 
-- A Linux Wayland desktop and an existing, user-owned `XDG_RUNTIME_DIR`. The GUI is Wayland-only, not an X11 application.
+- A Linux Wayland desktop and an existing, user-owned `XDG_RUNTIME_DIR`. The GUI is Wayland-only, not an X11 application. `cinmux tui` needs neither Wayland nor Foot.
 - Foot, tmux, and git on `PATH`; git supplies branch metadata.
 - Qt Quick Controls Basic, the Qt SQLite SQL driver, the Qt Wayland platform plugin, and Qt SVG image support. Distribution splits vary: installing only the Qt development headers is not enough.
 - Noto Sans for the intended interface typography (otherwise the system sans-serif fallback is used).
@@ -50,13 +53,13 @@ Runtime requirements:
 Install only missing named packages from your configured repositories. On Omarchy:
 
 ```sh
-omarchy pkg add gcc cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg icu tomlplusplus wlroots0.20 wayland libxkbcommon pixman foot tmux git noto-fonts xdg-utils
+omarchy pkg add gcc cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg icu tomlplusplus wlroots0.20 wayland libxkbcommon pixman libvterm foot tmux git noto-fonts xdg-utils
 ```
 
 On plain Arch Linux, the corresponding command is:
 
 ```sh
-sudo pacman -S --needed gcc cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg icu tomlplusplus wlroots0.20 wayland libxkbcommon pixman foot tmux git noto-fonts xdg-utils
+sudo pacman -S --needed gcc cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg icu tomlplusplus wlroots0.20 wayland libxkbcommon pixman libvterm foot tmux git noto-fonts xdg-utils
 ```
 
 These commands do not request a system-wide update. Do not force incompatible versions or use a partial repository refresh to bypass package-manager dependency errors. If your repositories do not provide the supported wlroots ABI, that is an unmet build prerequisite, not a reason to patch Qt or Foot.
@@ -134,6 +137,33 @@ Closing the window or quitting Cinmux closes its Foot views, **not its tmux jobs
 
 Processes are not restored after a reboot; logout may also end them according to the system's session policy. Saved entries remain and can be started explicitly, but commands are not replayed and terminal transcripts are not saved by Cinmux.
 
+## Terminal UI over SSH
+
+`cinmux tui` opens the workspace inside the current terminal, typically over SSH to the machine that runs your sessions:
+
+```sh
+ssh -t workstation cinmux tui
+```
+
+Use the absolute `~/.local/bin/cinmux` path if the remote shell's `PATH` lacks it. The layout mirrors the window: a toolbar row, the folder and session columns, and the selected session's terminal. It shares the profile's sessions, folders, pins, notifications, and activity with the GUI in both directions, and can run while the GUI is open or from several connections at once. It needs tmux and a terminal, not Wayland or Foot. When an SSH login lacks `XDG_RUNTIME_DIR`, it uses `/run/user/<uid>` if that directory exists and is yours, so it finds the GUI's sessions.
+
+Each displayed session is a real tmux client, emulated with libvterm and drawn inside your terminal. When the GUI and a TUI show the same session, tmux sizes it for the client used most recently.
+
+- **Mouse:** click rows and toolbar buttons, right-click for the same menus, drag a session onto a folder or **Tabs**, drag the column dividers, and hover for details. Mouse input over the terminal goes to tmux (selection, wheel scrollback, pane borders); hold your terminal's bypass modifier, usually Shift, for its own selection and links.
+- **Keyboard:** the shortcuts above work unchanged on terminals with the kitty keyboard protocol enabled (kitty, foot, Ghostty, Alacritty, and others). Elsewhere, including inside another tmux, `Ctrl+Shift+letter` cannot be told apart from `Ctrl+letter`, so `Ctrl+Alt` replaces `Ctrl+Shift` and **Ctrl+Alt+T** opens a new tab. Menus show the shortcuts that apply to the current terminal.
+- **Ctrl+Shift+E** (or **Ctrl+Alt+E**) focuses the session list. Outside the terminal, Tab and Shift+Tab move between search, folders, sessions, and terminal; Escape returns to the terminal; Delete in the session list confirms closing the selected session. Enter on a stopped or failed session starts or reconnects it.
+
+Quitting with **Ctrl+Shift+Q** or **Quit Cinmux**, or dropping the SSH connection, closes only the TUI's tmux clients; sessions keep running.
+
+The TUI uses the theme palette in 24-bit color when the terminal advertises it (`COLORTERM=truecolor`, or a `TERM` such as foot, kitty, alacritty, ghostty, or wezterm) and the nearest 256-color palette otherwise. SSH does not forward `COLORTERM` by default; set `CINMUX_TUI_COLORS=24bit` or `256` to override detection. Terminal content keeps its own indexed and default colors.
+
+Differences from the GUI:
+
+- Copying in tmux reaches your local clipboard through OSC 52 when your terminal allows it; paste with your terminal's paste shortcut.
+- OSC desktop notifications from terminal programs are not relayed; use `cinmux notify` or the OMP integration. Terminal images (sixel, kitty graphics) are not shown.
+- **Choose directory** is a path prompt with Tab completion.
+- Column visibility and widths, the view, and the selection are saved in `ui.ini` under `[tui]`. The first launch continues from the GUI's view and selection.
+
 ## Tab activity and OMP
 
 Every tab row keeps an activity icon and label visible, including when another tab is selected:
@@ -196,7 +226,7 @@ Foot's OSC notifications route to the same entry while its renderer exists; tmux
 
 ## Profiles, appearance, and isolation
 
-By default, persistent state lives in `$XDG_DATA_HOME/cinmux` (or `$HOME/.local/share/cinmux`): `state.sqlite` stores entries/folders/notifications/activity reports and `ui.ini` stores GUI preferences. Schema upgrades preserve existing data. Each canonical state directory identifies a separate profile, with one GUI owner and private runtime sockets under `$XDG_RUNTIME_DIR`. Its tmux server uses `$XDG_RUNTIME_DIR/cinmux-<profileHash>/tmux.sock`, not the user's default tmux socket. Foot connects to a separate private nested Wayland socket; terminal jobs retain the host desktop environment.
+By default, persistent state lives in `$XDG_DATA_HOME/cinmux` (or `$HOME/.local/share/cinmux`): `state.sqlite` stores entries/folders/notifications/activity reports and `ui.ini` stores GUI and TUI preferences. Schema upgrades preserve existing data. Each canonical state directory identifies a separate profile, with one GUI owner (any number of `cinmux tui` instances may run alongside it) and private runtime sockets under `$XDG_RUNTIME_DIR`. Its tmux server uses `$XDG_RUNTIME_DIR/cinmux-<profileHash>/tmux.sock`, not the user's default tmux socket. Foot connects to a separate private nested Wayland socket; terminal jobs retain the host desktop environment.
 
 For a separate profile without touching the normal collection:
 

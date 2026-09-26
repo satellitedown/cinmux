@@ -3,15 +3,14 @@
 #include "session_model.h"
 #include "state_store.h"
 #include <QProcessEnvironment>
-#include <QPointer>
 #include <QQueue>
 #include <QSet>
 #include <QTimer>
 #include <functional>
 #include <memory>
 
-class TerminalCompositor;
 class QProcess;
+class TerminalRenderer;
 
 class SessionController : public QObject {
     Q_OBJECT
@@ -24,7 +23,7 @@ class SessionController : public QObject {
     Q_PROPERTY(int totalCount READ totalCount NOTIFY stateChanged)
     Q_PROPERTY(int attentionCount READ attentionCount NOTIFY stateChanged)
 public:
-    explicit SessionController(StateStore *store, TerminalCompositor *compositor, QObject *parent = nullptr);
+    explicit SessionController(StateStore *store, TerminalRenderer *renderer, QObject *parent = nullptr);
     ~SessionController() override;
     SessionModel *model() { return &m_model; }
     QVariantList folders() const { return m_folders; }
@@ -36,7 +35,6 @@ public:
     void setView(const QString &view);
     int totalCount() const { return m_sessions.size(); }
     int attentionCount() const;
-    void setColorMode(const QString &mode);
     Q_INVOKABLE void createSession(const QString &folderId, const QString &cwd);
     Q_INVOKABLE void selectSession(const QString &id);
     Q_INVOKABLE void renameSession(const QString &id, const QString &title);
@@ -69,10 +67,6 @@ private:
         QString branch;
         QString terminalError;
         QList<TmuxPane> panes;
-        QPointer<QProcess> foot;
-        QByteArray footStderr;
-        quint64 rendererGeneration = 0;
-        bool mapped = false;
         bool reconciled = false;
         bool closing = false;
     };
@@ -104,7 +98,7 @@ private:
     QString activeCwd(const Session &session) const;
     static const TmuxPane *activePane(const QList<TmuxPane> &panes);
     StateStore *m_store;
-    TerminalCompositor *m_compositor;
+    TerminalRenderer *m_renderer;
     SessionModel m_model;
     QHash<QString, std::shared_ptr<Session>> m_sessions;
     QList<FolderRecord> m_folderRecords;
@@ -119,10 +113,8 @@ private:
     QString m_selectedId;
     QString m_search;
     QString m_view = QStringLiteral("all");
-    QString m_colorMode = QStringLiteral("dark");
     QString m_tmuxConfig;
     QString m_tmuxProgram;
-    QString m_footProgram;
     qint64 m_dataVersion = -1;
     bool m_refreshing = false;
     bool m_shuttingDown = false;

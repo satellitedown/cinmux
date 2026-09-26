@@ -18,6 +18,7 @@ int help() {
     QTextStream(stdout) << "Cinmux — persistent terminal workspaces\n\n"
         "Usage:\n"
         "  cinmux                         Open the workspace window\n"
+        "  cinmux tui                     Open the workspace in this terminal (e.g. over SSH)\n"
         "  cinmux notify [--session UUID] --title TEXT [--body TEXT]\n"
         "  cinmux activity --state idle|working|waiting|done --pid PID\n"
         "                  [--detail TEXT] [--session UUID]\n"

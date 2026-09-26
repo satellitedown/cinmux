@@ -1,5 +1,5 @@
 #include "session_controller.h"
-#include "terminal_compositor.h"
+#include "terminal_renderer.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -17,11 +17,6 @@
 namespace {
 QString newId() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
 QString exactTarget(const QString &id) { return QStringLiteral("=") + StateStore::sessionName(id); }
-QString launcherQuote(QString argument) {
-    argument.replace('\\', QStringLiteral("\\\\"));
-    argument.replace('"', QStringLiteral("\\\""));
-    return '"' + argument + '"';
-}
 QString processError(const QByteArray &error) {
     const QString text = QString::fromUtf8(error).trimmed();
     return text.isEmpty() ? QStringLiteral("Command failed without an error message") : text;
@@ -35,13 +30,12 @@ qint64 attentionAt(const SessionRecord &record) {
 }
 }
 
-SessionController::SessionController(StateStore *store, TerminalCompositor *compositor, QObject *parent)
-    : QObject(parent), m_store(store), m_compositor(compositor), m_model(this), m_hostEnvironment(QProcessEnvironment::systemEnvironment()) {
+SessionController::SessionController(StateStore *store, TerminalRenderer *renderer, QObject *parent)
+    : QObject(parent), m_store(store), m_renderer(renderer), m_model(this), m_hostEnvironment(QProcessEnvironment::systemEnvironment()) {
     m_hostEnvironment.remove(QStringLiteral("TMUX"));
     m_hostEnvironment.remove(QStringLiteral("TMUX_PANE"));
     m_hostEnvironment.remove(QStringLiteral("WAYLAND_SOCKET"));
     m_tmuxProgram = QStandardPaths::findExecutable(QStringLiteral("tmux"));
-    m_footProgram = QStandardPaths::findExecutable(QStringLiteral("foot"));
     QFile config(QStringLiteral(":/cinmux/cinmux.tmux.conf"));
     QSaveFile destination(store->stateDirectory() + QStringLiteral("/cinmux.tmux.conf"));
     if (config.open(QIODevice::ReadOnly) && destination.open(QIODevice::WriteOnly)) {
@@ -64,20 +58,31 @@ SessionController::SessionController(StateStore *store, TerminalCompositor *comp
         if (version != m_dataVersion && readState()) m_dataVersion = version;
     });
     m_databaseTimer.start(250);
-    if (m_compositor) {
-        connect(m_compositor, &TerminalCompositor::viewReady, this, [this](const QString &id) {
+    if (m_renderer) {
+        connect(m_renderer, &TerminalRenderer::ready, this, [this](const QString &id) {
             const auto s = m_sessions.value(id);
             if (!s) return;
-            s->mapped = true; s->terminalError.clear(); publish();
+            s->terminalError.clear(); publish();
         });
-        connect(m_compositor, &TerminalCompositor::viewLost, this, [this](const QString &id, const QString &message) {
+        connect(m_renderer, &TerminalRenderer::lost, this, [this](const QString &id, const QString &message) {
             const auto s = m_sessions.value(id);
             if (!s || m_shuttingDown) return;
-            s->mapped = false; s->terminalError = message;
+            // Blocks automatic reattachment while the snapshot decides.
+            s->terminalError = message;
             publish();
-            if (!s->closing) fail(id, message);
+            // A view also ends when its tmux session does (last pane closed,
+            // server exited): that is a stop the snapshot reports, not a failure.
+            snapshot([this, id, message](bool ok, const QList<TmuxPane> &panes) {
+                const auto current = m_sessions.value(id);
+                if (!current || m_shuttingDown) return;
+                const bool ended = ok && std::none_of(panes.cbegin(), panes.cend(), [&id](const TmuxPane &p) { return p.sessionName == StateStore::sessionName(id); });
+                if (ended) { if (current->terminalError == message) current->terminalError.clear(); }
+                else if (!current->closing) fail(id, message);
+                if (ok) applySnapshot(panes);
+                else publish();
+            });
         });
-        connect(m_compositor, &TerminalCompositor::terminalInteracted, this, [this](const QString &id) {
+        connect(m_renderer, &TerminalRenderer::interacted, this, [this](const QString &id) {
             const auto s = m_sessions.value(id);
             if (s) acknowledge(id, s->record.noticeSequence);
         });
@@ -234,7 +239,6 @@ void SessionController::setView(const QString &value) {
     if (value == m_view) return;
     m_view = value; publish(); emit viewChanged(); refreshBranches();
 }
-void SessionController::setColorMode(const QString &mode) { if (mode == QStringLiteral("light") || mode == QStringLiteral("dark")) m_colorMode = mode; }
 
 void SessionController::selectSession(const QString &id) {
     const auto s = m_sessions.value(id);
@@ -420,77 +424,13 @@ void SessionController::respawnPanes(const QList<TmuxPane> &panes, int index, co
          });
 }
 
-void SessionController::stopRenderer(const QString &id) {
-    const auto s = m_sessions.value(id);
-    if (!s) return;
-    ++s->rendererGeneration;
-    s->mapped = false;
-    if (m_compositor) m_compositor->forgetClient(id);
-    if (auto *process = s->foot.data()) {
-        s->foot.clear(); process->disconnect(this);
-        if (process->state() == QProcess::NotRunning) process->deleteLater();
-        else {
-            connect(process, &QProcess::finished, process, &QObject::deleteLater);
-            process->kill();
-            if (m_shuttingDown) process->waitForFinished(1000);
-        }
-    }
-}
+void SessionController::stopRenderer(const QString &id) { if (m_renderer) m_renderer->detach(id); }
 void SessionController::attach(const QString &id, bool force) {
     const auto s = m_sessions.value(id);
-    if (!s || m_shuttingDown || !m_compositor) return;
-    if (s->foot && !force) return;
-    if (force) stopRenderer(id);
-    auto failAttach = [this, id, s](const QString &error) { s->terminalError = error; publish(); fail(id, error); };
-    if (m_footProgram.isEmpty()) { failAttach(QStringLiteral("Foot is not installed or is not on PATH")); return; }
-    if (m_compositor->socketName().isEmpty()) { failAttach(QStringLiteral("The nested Wayland compositor has no socket")); return; }
-    if (!QFileInfo::exists(qEnvironmentVariable("XDG_RUNTIME_DIR") + '/' + QString::fromUtf8(m_compositor->socketName()))) {
-        failAttach(QStringLiteral("The nested Wayland compositor socket is unavailable")); return;
-    }
-    auto *process = new QProcess(this);
-    s->foot = process; s->mapped = false; s->terminalError.clear(); s->footStderr.clear();
-    const quint64 generation = ++s->rendererGeneration;
-    const QString binary = QCoreApplication::applicationFilePath();
-    QStringList args{QStringLiteral("--app-id=io.niay.cinmux.session.") + id};
-    const QStringList overrides{
-        QStringLiteral("initial-window-mode=windowed"), QStringLiteral("initial-color-theme=") + m_colorMode,
-        QStringLiteral("colors-dark.alpha=1"), QStringLiteral("colors-light.alpha=1"),
-        QStringLiteral("colors-dark.blur=no"), QStringLiteral("colors-light.blur=no"),
-        QStringLiteral("key-bindings.spawn-terminal=none"),
-        QStringLiteral("url.launch=") + launcherQuote(binary) + QStringLiteral(" --host-exec xdg-open ${url}"),
-        QStringLiteral("desktop-notifications.command=") + launcherQuote(binary) + QStringLiteral(" notify --session ") + id + QStringLiteral(" --title ${title} --body ${body}"),
-        QStringLiteral("desktop-notifications.inhibit-when-focused=no")};
-    for (const auto &value : overrides) args << QStringLiteral("--override") << value;
-    args << QStringLiteral("--") << binary << QStringLiteral("--host-exec") << m_tmuxProgram << QStringLiteral("-S") << m_store->tmuxSocket()
-         << QStringLiteral("attach-session") << QStringLiteral("-E") << QStringLiteral("-t") << exactTarget(id);
-    auto environment = m_hostEnvironment;
-    environment.insert(QStringLiteral("CINMUX_HOST_WAYLAND_DISPLAY"), m_hostEnvironment.value(QStringLiteral("WAYLAND_DISPLAY")));
-    environment.insert(QStringLiteral("WAYLAND_DISPLAY"), QString::fromUtf8(m_compositor->socketName()));
-    environment.insert(QStringLiteral("CINMUX_STATE_DIR"), m_store->stateDirectory());
-    environment.insert(QStringLiteral("CINMUX_SESSION_ID"), id);
-    environment.insert(QStringLiteral("CINMUX_TMUX_SOCKET"), m_store->tmuxSocket());
-    process->setProcessEnvironment(environment);
-    connect(process, &QProcess::started, this, [this, id, generation, process] {
-        const auto current = m_sessions.value(id);
-        if (current && current->rendererGeneration == generation) m_compositor->expectClient(id, process->processId());
-    });
-    connect(process, &QProcess::readyReadStandardError, this, [s, process] { s->footStderr += process->readAllStandardError(); s->footStderr = s->footStderr.right(16384); });
-    auto exited = [this, id, generation, process](const QString &reason) {
-        const auto current = m_sessions.value(id);
-        if (!current || current->rendererGeneration != generation || m_shuttingDown) return;
-        current->footStderr += process->readAllStandardError();
-        current->foot.clear(); current->mapped = false;
-        m_compositor->forgetClient(id);
-        QString message = QString::fromUtf8(current->footStderr).trimmed();
-        if (message.isEmpty()) message = reason;
-        current->terminalError = message;
-        process->deleteLater(); publish();
-        if (!current->closing) fail(id, message);
-        refresh();
-    };
-    connect(process, &QProcess::finished, this, [exited](int code, QProcess::ExitStatus) { exited(QStringLiteral("Terminal renderer exited (code %1). The tmux session is unaffected; reconnect to view it.").arg(code)); });
-    connect(process, &QProcess::errorOccurred, this, [process, exited](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) exited(process->errorString()); });
-    process->start(m_footProgram, args);
+    if (!s || m_shuttingDown || !m_renderer) return;
+    if (!force && m_renderer->attached(id)) return;
+    s->terminalError.clear();
+    m_renderer->attach(id, force);
     publish();
 }
 void SessionController::reconnectTerminal(const QString &id) {
@@ -554,7 +494,7 @@ void SessionController::closeOwned(const QString &id, Done done) {
     };
     snapshot([this, id, session, done](bool ok, const QList<TmuxPane> &before) {
         if (!ok) { done(); return; }
-        // Killing tmux normally disconnects Foot before the verification returns.
+        // Killing tmux normally disconnects the terminal view before the verification returns.
         session->closing = true;
         const bool exists = std::any_of(before.cbegin(), before.cend(), [&id](const auto &p) { return p.sessionName == StateStore::sessionName(id); });
         auto verify = [this, id, done](const CommandResult &result) {
