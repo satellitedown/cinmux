@@ -1,3 +1,5 @@
 /build/
 /build-*/
 /CMakeUserPresets.json
+/macos/.build/
+/macos/build/

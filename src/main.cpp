@@ -50,7 +50,7 @@ int main(int argc, char **argv)
     if (argc > 1 && QByteArray(argv[1]) == "--host-exec") return hostExec(argc, argv);
     QCoreApplication::setApplicationName("cinmux");
     QCoreApplication::setOrganizationName("niay");
-    QCoreApplication::setApplicationVersion("1.0.0");
+    QCoreApplication::setApplicationVersion("1.1.0");
     if (argc > 1 && QByteArray(argv[1]) == "tui") {
         QCoreApplication app(argc, argv);
         return runTui(app);

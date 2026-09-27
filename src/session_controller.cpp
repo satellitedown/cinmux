@@ -35,6 +35,10 @@ SessionController::SessionController(StateStore *store, TerminalRenderer *render
     m_hostEnvironment.remove(QStringLiteral("TMUX"));
     m_hostEnvironment.remove(QStringLiteral("TMUX_PANE"));
     m_hostEnvironment.remove(QStringLiteral("WAYLAND_SOCKET"));
+    // An unattached tmux client's own PATH replaces `-e PATH=…` for panes it
+    // spawns (new-session, respawn-pane, split-window): every tmux invocation
+    // carries the app directory so shells and agents find `cinmux`.
+    m_hostEnvironment.insert(QStringLiteral("PATH"), QCoreApplication::applicationDirPath() + ':' + m_hostEnvironment.value(QStringLiteral("PATH")));
     m_tmuxProgram = QStandardPaths::findExecutable(QStringLiteral("tmux"));
     QFile config(QStringLiteral(":/cinmux/cinmux.tmux.conf"));
     QSaveFile destination(store->stateDirectory() + QStringLiteral("/cinmux.tmux.conf"));
@@ -405,7 +409,6 @@ void SessionController::startOwned(const QString &id, const QString &cwd, Done d
             env.insert(QStringLiteral("CINMUX_SESSION_ID"), id);
             env.insert(QStringLiteral("CINMUX_STATE_DIR"), m_store->stateDirectory());
             env.insert(QStringLiteral("CINMUX_TMUX_SOCKET"), m_store->tmuxSocket());
-            env.insert(QStringLiteral("PATH"), QCoreApplication::applicationDirPath() + ':' + env.value(QStringLiteral("PATH")));
             for (const auto &key : env.keys()) args << QStringLiteral("-e") << key + '=' + env.value(key);
             args << shell() << QStringLiteral("-l");
             tmux(args, complete);

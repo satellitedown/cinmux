@@ -75,6 +75,7 @@ private slots:
     void waitingSurvivesSelectionAndAcknowledgement();
     void activityReconcilesDeadAndReusedReporters();
     void viewLossReportsOnlyRendererFailures();
+    void panesFindTheCliOnPath();
 };
 
 void BackendTest::notificationAcknowledgesOnlyObservedSequence() {
@@ -558,6 +559,41 @@ void BackendTest::viewLossReportsOnlyRendererFailures() {
     QTest::qWait(300);
     QCOMPARE(errors.count(), 1);
     QVERIFY(controller.selected().value("terminalError").toString().isEmpty());
+}
+
+// Agents in any pane report through `cinmux`: the app directory must reach the
+// shells of new sessions and of split panes (tmux gives panes spawned by an
+// unattached client that client's PATH, not the `-e PATH=` value).
+void BackendTest::panesFindTheCliOnPath() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    StateStore store(directory.path());
+    QVERIFY2(store.open(), qPrintable(store.error()));
+    PrivateServer server{store.tmuxSocket()};
+    const QByteArray oldShell = qgetenv("SHELL");
+    const auto restore = qScopeGuard([&] { if (oldShell.isNull()) qunsetenv("SHELL"); else qputenv("SHELL", oldShell); });
+    qputenv("SHELL", "/bin/sh");
+    SessionController controller(&store, nullptr);
+    controller.createSession({}, directory.path());
+    const QString id = controller.selectedId();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.selected().value("status").toString(), QStringLiteral("running"), 10000);
+    QTRY_COMPARE_WITH_TIMEOUT(server.owned(id).size(), 1, 10000);
+    controller.splitActive(QStringLiteral("right"));
+    QTRY_COMPARE_WITH_TIMEOUT(server.owned(id).size(), 2, 10000);
+    const QString app = QCoreApplication::applicationDirPath();
+    for (const auto &pane : server.owned(id)) {
+        bool sent = false;
+        server.run({QStringLiteral("send-keys"), QStringLiteral("-t"), pane.paneId, QStringLiteral("echo \"PATH=$PATH\""), QStringLiteral("Enter")}, &sent);
+        QVERIFY(sent);
+    }
+    for (const auto &pane : server.owned(id)) {
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto lines = server.run({QStringLiteral("capture-pane"), QStringLiteral("-p"), QStringLiteral("-J"), QStringLiteral("-t"), pane.paneId}).split('\n');
+            return std::any_of(lines.cbegin(), lines.cend(), [&app](const QByteArray &line) {
+                return line.startsWith("PATH=") && QString::fromUtf8(line.mid(5)).split(':').contains(app);
+            });
+        })(), 3000);
+    }
 }
 
 QTEST_GUILESS_MAIN(BackendTest)
